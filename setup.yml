@@ -1,0 +1,216 @@
+---
+# ============================================================================
+#  Server bootstrap blueprint
+#  Common hardening  +  nginx  +  GitHub Actions self-hosted runner
+#  Assumes a fresh Debian/Ubuntu VPS (Hetzner, DigitalOcean, etc.)
+# ============================================================================
+#
+#  RUN IT (no inventory file needed — point straight at the new server's IP,
+#  note the trailing comma):
+#
+#      ansible-playbook -i 'NEW_SERVER_IP,' setup.yml -u root \
+#          -e github_repo=your-org/your-repo \
+#          -e github_pat=ghp_xxxxxxxxxxxxxxxxx
+#
+#  ...or just edit the vars block below and run:
+#
+#      ansible-playbook -i 'NEW_SERVER_IP,' setup.yml -u root
+#
+#  The GitHub PAT needs repo administration rights so it can mint a runner
+#  registration token:
+#    - Classic PAT: "repo" scope
+#    - Fine-grained PAT: repo Administration = Read & Write
+#
+#  Re-running is safe: tasks are idempotent and the runner won't re-register.
+# ============================================================================
+
+- name: Bootstrap new server
+  hosts: all
+  become: true
+
+  vars:
+    # ---- CHANGE THESE (or override with -e on the command line) ------------
+    github_repo: "your-org/your-repo"          # owner/repo
+    github_pat: "ghp_xxxxxxxxxxxxxxxxxxxxxx"    # PAT with repo admin rights
+    runner_name: "{{ ansible_hostname }}"       # name shown in GitHub UI
+    runner_labels: "self-hosted,linux,vps"
+    runner_user: "github"
+    runner_arch: "x64"                          # use "arm64" for an ARM VPS
+    # ------------------------------------------------------------------------
+    runner_dir: "/home/{{ runner_user }}/actions-runner"
+
+  tasks:
+    # ======================= COMMON / HARDENING =============================
+    - name: Update apt cache and upgrade packages
+      apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - tar
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+        state: present
+
+    - name: Allow SSH, HTTP and HTTPS through the firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "22"
+        - "80"
+        - "443"
+
+    - name: Enable firewall (default deny inbound)
+      ufw:
+        state: enabled
+        policy: deny
+
+    # ============================== NGINX ===================================
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Ensure nginx is running and enabled on boot
+      service:
+        name: nginx
+        state: started
+        enabled: true
+
+    # ============================== DOCKER ==================================
+    - name: Create a dedicated, non-root user for the runner
+      user:
+        name: "{{ runner_user }}"
+        shell: /bin/bash
+        create_home: true
+
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - gnupg
+        state: present
+
+    - name: Create the apt keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add Docker's official GPG key
+      get_url:
+        url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Add the Docker apt repository
+      apt_repository:
+        repo: >-
+          deb [arch={{ 'arm64' if runner_arch == 'arm64' else 'amd64' }}
+          signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/{{ ansible_distribution | lower }}
+          {{ ansible_distribution_release }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine, CLI, and the Compose plugin
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker is running and enabled on boot
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add the runner user to the docker group
+      user:
+        name: "{{ runner_user }}"
+        groups: docker
+        append: true
+
+    # ===================== GITHUB ACTIONS RUNNER ============================
+    - name: Look up the latest runner release version
+      uri:
+        url: https://api.github.com/repos/actions/runner/releases/latest
+        headers:
+          Authorization: "Bearer {{ github_pat }}"
+          Accept: "application/vnd.github+json"
+      register: runner_release
+
+    - name: Set runner version fact
+      set_fact:
+        runner_version: "{{ runner_release.json.tag_name | regex_replace('^v', '') }}"
+
+    - name: Create the runner directory
+      file:
+        path: "{{ runner_dir }}"
+        state: directory
+        owner: "{{ runner_user }}"
+        group: "{{ runner_user }}"
+        mode: "0755"
+
+    - name: Has the runner already been configured?
+      stat:
+        path: "{{ runner_dir }}/.runner"
+      register: runner_configured
+
+    - name: Download and extract the runner
+      unarchive:
+        src: "https://github.com/actions/runner/releases/download/v{{ runner_version }}/actions-runner-linux-{{ runner_arch }}-{{ runner_version }}.tar.gz"
+        dest: "{{ runner_dir }}"
+        remote_src: true
+        owner: "{{ runner_user }}"
+        group: "{{ runner_user }}"
+        creates: "{{ runner_dir }}/config.sh"
+
+    - name: Mint a short-lived registration token from GitHub
+      uri:
+        url: "https://api.github.com/repos/{{ github_repo }}/actions/runners/registration-token"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ github_pat }}"
+          Accept: "application/vnd.github+json"
+        status_code: 201
+      register: registration
+      when: not runner_configured.stat.exists
+
+    - name: Configure (register) the runner against the repo
+      become_user: "{{ runner_user }}"
+      command:
+        cmd: >
+          ./config.sh
+          --url https://github.com/{{ github_repo }}
+          --token {{ registration.json.token }}
+          --name {{ runner_name }}
+          --labels {{ runner_labels }}
+          --unattended
+          --replace
+        chdir: "{{ runner_dir }}"
+      when: not runner_configured.stat.exists
+
+    - name: Install the runner as a systemd service
+      command:
+        cmd: ./svc.sh install {{ runner_user }}
+        chdir: "{{ runner_dir }}"
+        creates: "/etc/systemd/system/actions.runner.*.service"
+
+    - name: Start and enable the runner service
+      command:
+        cmd: ./svc.sh start
+        chdir: "{{ runner_dir }}"
+      changed_when: false

@@ -1,0 +1,14 @@
+# Ansible
+*.retry
+inventory/
+hosts
+*.vault
+vault_pass.txt
+
+# Secrets / local overrides
+vars_secret.yml
+secrets.yml
+*.local.yml
+
+# macOS
+.DS_Store
