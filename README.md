@@ -30,7 +30,7 @@ Tested on: **Ubuntu 22.04 / 24.04**, **Debian 12** — on Hetzner, DigitalOcean,
 ```bash
 ansible-playbook -i 'YOUR_SERVER_IP,' setup.yml -u root \
   -e github_repo=your-org/your-repo \
-  -e github_pat=ghp_xxxxxxxxxxxxxxxxx
+  -e runner_reg_token=AXXXXXXXXXXXXXXXXX
 ```
 
 > The trailing comma after the IP is required — it tells Ansible to treat the value as an inline inventory.
@@ -44,7 +44,7 @@ Edit the `vars` block at the top of `setup.yml`, or pass any variable on the com
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `github_repo` | `your-org/your-repo` | `owner/repo` the runner registers against |
-| `github_pat` | placeholder | PAT used to mint the registration token |
+| `runner_reg_token` | placeholder | Registration token from GitHub UI (expires in 1h) |
 | `runner_name` | hostname | Name shown in the GitHub UI under **Settings → Runners** |
 | `runner_labels` | `self-hosted,linux,vps` | Comma-separated labels for workflow targeting |
 | `runner_user` | `github` | Dedicated OS user that owns the runner process |
@@ -52,25 +52,16 @@ Edit the `vars` block at the top of `setup.yml`, or pass any variable on the com
 
 ---
 
-## Keeping your PAT out of version control
+## Getting the registration token
 
-Never commit a real PAT. Three safe options:
+Go to your repo → **Settings → Actions → Runners → New self-hosted runner**, then copy the token from the `--token` line in the Configure section. Tokens expire after **1 hour**.
 
-**1. Pass it at runtime (simplest)**
+## Keeping the token out of version control
+
+Never commit a real token. Pass it at runtime instead:
+
 ```bash
-ansible-playbook ... -e github_pat=ghp_xxx
-```
-
-**2. Export as an environment variable**
-```bash
-export GITHUB_PAT=ghp_xxx
-ansible-playbook ... -e github_pat=$GITHUB_PAT
-```
-
-**3. Ansible Vault (for team use)**
-```bash
-ansible-vault encrypt_string 'ghp_xxx' --name github_pat >> vars.yml
-ansible-playbook ... -e @vars.yml --ask-vault-pass
+ansible-playbook ... -e runner_reg_token=AXXXXXXXXXXX
 ```
 
 ---

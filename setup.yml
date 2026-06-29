@@ -10,16 +10,16 @@
 #
 #      ansible-playbook -i 'NEW_SERVER_IP,' setup.yml -u root \
 #          -e github_repo=your-org/your-repo \
-#          -e github_pat=ghp_xxxxxxxxxxxxxxxxx
+#          -e runner_reg_token=AXXXXXXXXXXXXXXXXX
 #
 #  ...or just edit the vars block below and run:
 #
 #      ansible-playbook -i 'NEW_SERVER_IP,' setup.yml -u root
 #
-#  The GitHub PAT needs repo administration rights so it can mint a runner
-#  registration token:
-#    - Classic PAT: "repo" scope
-#    - Fine-grained PAT: repo Administration = Read & Write
+#  Get the registration token from GitHub:
+#    Repo → Settings → Actions → Runners → New self-hosted runner
+#    Copy the token from the "--token" line in the "Configure" section.
+#    Tokens expire after 1 hour.
 #
 #  Re-running is safe: tasks are idempotent and the runner won't re-register.
 # ============================================================================
@@ -31,7 +31,7 @@
   vars:
     # ---- CHANGE THESE (or override with -e on the command line) ------------
     github_repo: "your-org/your-repo"          # owner/repo
-    github_pat: "ghp_xxxxxxxxxxxxxxxxxxxxxx"    # PAT with repo admin rights
+    runner_reg_token: "AXXXXXXXXXXXXXXXXX"      # from GitHub UI (expires in 1h)
     runner_name: "{{ ansible_hostname }}"       # name shown in GitHub UI
     runner_labels: "self-hosted,linux,vps"
     runner_user: "github"
@@ -148,7 +148,6 @@
       uri:
         url: https://api.github.com/repos/actions/runner/releases/latest
         headers:
-          Authorization: "Bearer {{ github_pat }}"
           Accept: "application/vnd.github+json"
       register: runner_release
 
@@ -178,24 +177,13 @@
         group: "{{ runner_user }}"
         creates: "{{ runner_dir }}/config.sh"
 
-    - name: Mint a short-lived registration token from GitHub
-      uri:
-        url: "https://api.github.com/repos/{{ github_repo }}/actions/runners/registration-token"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ github_pat }}"
-          Accept: "application/vnd.github+json"
-        status_code: 201
-      register: registration
-      when: not runner_configured.stat.exists
-
     - name: Configure (register) the runner against the repo
       become_user: "{{ runner_user }}"
       command:
         cmd: >
           ./config.sh
           --url https://github.com/{{ github_repo }}
-          --token {{ registration.json.token }}
+          --token {{ runner_reg_token }}
           --name {{ runner_name }}
           --labels {{ runner_labels }}
           --unattended
