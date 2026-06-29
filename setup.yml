@@ -1,7 +1,7 @@
 ---
 # ============================================================================
 #  Server bootstrap blueprint
-#  Common hardening  +  nginx  +  GitHub Actions self-hosted runner
+#  Common hardening  +  nginx  +  SSL  +  Docker  +  GitHub Actions runner
 #  Assumes a fresh Debian/Ubuntu VPS (Hetzner, DigitalOcean, etc.)
 # ============================================================================
 #
@@ -10,7 +10,10 @@
 #
 #      ansible-playbook -i 'NEW_SERVER_IP,' setup.yml -u root \
 #          -e github_repo=your-org/your-repo \
-#          -e runner_reg_token=AXXXXXXXXXXXXXXXXX
+#          -e runner_reg_token=AXXXXXXXXXXXXXXXXX \
+#          -e domain=example.com \
+#          -e certbot_email=you@example.com \
+#          -e app_port=3000
 #
 #  ...or just edit the vars block below and run:
 #
@@ -20,6 +23,9 @@
 #    Repo → Settings → Actions → Runners → New self-hosted runner
 #    Copy the token from the "--token" line in the "Configure" section.
 #    Tokens expire after 1 hour.
+#
+#  DNS: make sure your domain's A record points to NEW_SERVER_IP before
+#  running — Certbot needs to reach the server over HTTP to issue the cert.
 #
 #  Re-running is safe: tasks are idempotent and the runner won't re-register.
 # ============================================================================
@@ -36,6 +42,9 @@
     runner_labels: "self-hosted,linux,vps"
     runner_user: "github"
     runner_arch: "x64"                          # use "arm64" for an ARM VPS
+    domain: "example.com"                       # your domain (A record must point to this server)
+    certbot_email: "you@example.com"            # for Let's Encrypt expiry notifications
+    app_port: "3000"                            # port your Docker container listens on
     # ------------------------------------------------------------------------
     runner_dir: "/home/{{ runner_user }}/actions-runner"
 
@@ -202,3 +211,55 @@
         cmd: ./svc.sh start
         chdir: "{{ runner_dir }}"
       changed_when: false
+
+    # ===================== NGINX SITE CONFIG + SSL ==========================
+    - name: Install Certbot and nginx plugin
+      apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Create nginx site config
+      copy:
+        dest: "/etc/nginx/sites-available/{{ domain }}"
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }};
+
+              location / {
+                  proxy_pass http://localhost:{{ app_port }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Enable nginx site
+      file:
+        src: "/etc/nginx/sites-available/{{ domain }}"
+        dest: "/etc/nginx/sites-enabled/{{ domain }}"
+        state: link
+
+    - name: Reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: Obtain SSL certificate with Certbot
+      command:
+        cmd: >
+          certbot --nginx
+          -d {{ domain }}
+          --non-interactive
+          --agree-tos
+          -m {{ certbot_email }}
+          --redirect
+        creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"

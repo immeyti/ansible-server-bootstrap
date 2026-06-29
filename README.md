@@ -30,7 +30,10 @@ Tested on: **Ubuntu 22.04 / 24.04**, **Debian 12** — on Hetzner, DigitalOcean,
 ```bash
 ansible-playbook -i 'YOUR_SERVER_IP,' setup.yml -u root \
   -e github_repo=your-org/your-repo \
-  -e runner_reg_token=AXXXXXXXXXXXXXXXXX
+  -e runner_reg_token=AXXXXXXXXXXXXXXXXX \
+  -e domain=example.com \
+  -e certbot_email=you@example.com \
+  -e app_port=3000
 ```
 
 > The trailing comma after the IP is required — it tells Ansible to treat the value as an inline inventory.
@@ -49,6 +52,9 @@ Edit the `vars` block at the top of `setup.yml`, or pass any variable on the com
 | `runner_labels` | `self-hosted,linux,vps` | Comma-separated labels for workflow targeting |
 | `runner_user` | `github` | Dedicated OS user that owns the runner process |
 | `runner_arch` | `x64` | Set to `arm64` for ARM-based VPS instances |
+| `domain` | `example.com` | Domain to configure nginx and issue SSL cert for |
+| `certbot_email` | `you@example.com` | Email for Let's Encrypt expiry notifications |
+| `app_port` | `3000` | Port your Docker container listens on |
 
 ---
 
