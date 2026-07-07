@@ -64,6 +64,7 @@
           - ufw
           - fail2ban
           - unattended-upgrades
+          - acl
         state: present
 
     - name: Allow SSH, HTTP and HTTPS through the firewall
